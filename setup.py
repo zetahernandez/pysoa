@@ -23,6 +23,7 @@ base_requirements = [
     'enum34;python_version<"3.4"',
     'msgpack-python~=0.5,>=0.5.2',
     'redis~=2.10',
+    'h2~=3.1.0',
     'six~=1.10',
     'typing;python_version<"3.5"',
 ]

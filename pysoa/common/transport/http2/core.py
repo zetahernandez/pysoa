@@ -105,9 +105,9 @@ class Http2TransportCore(object):
             return self._socket
         self._socket = socket.socket(family=socket.AF_INET, type=socket.SOCK_STREAM)
         self._socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self._socket.settimeout(1.0)
+        self._socket.settimeout(10.0)
         self._socket.bind((self.http_host, self.http_port))
-        self._socket.listen(1)
+        self._socket.listen(5)
 
         return self._socket
 
@@ -138,12 +138,12 @@ class Http2TransportCore(object):
 
     def receive_message(self):
         try:
-            conn, address = self.transport.accept()
+            socket_conn, address = self.transport.accept()
         except socket.timeout:
             raise MessageReceiveTimeout('Timeout')
 
         self.conn.initiate_connection()
-        self.socket_conn = conn
+        self.socket_conn = socket_conn
 
         data = self.conn.data_to_send()
         if data:
@@ -308,15 +308,13 @@ class Http2ClientTransportCore(object):
 
         return self._socket
 
-    def __attrs_post_init__(self):
+    def send_request_message(self, request_id, meta, body, message_expiry_in_seconds=None):
         config = H2Configuration(client_side=True, header_encoding='utf-8')
         self.conn = H2Connection(config=config)
         self._socket = None
         self.stream_data = {}
         self.request_made = False
         self._default_serializer = None
-
-    def send_request_message(self, request_id, meta, body, message_expiry_in_seconds=None):
         if request_id is None:
             raise InvalidMessageError('No request ID')
 
