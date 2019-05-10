@@ -33,6 +33,7 @@ class SocketServer(object):
         self.server_bind()
         self.server_activate()
         self.__shutdown_request = False
+        self.listener = None
 
     def server_bind(self):
         self.socket.bind(self.server_address)
@@ -57,7 +58,8 @@ class SocketServer(object):
         self.__shutdown_request = True
         self.__is_shut_down.wait()
 
-    def init_selector(self, poll_interval=0.5):
+    def init_selector(self, poll_interval=0.5, listener=None):
+        self.listener = listener
         self.__is_shut_down.clear()
         try:
             with selectors.DefaultSelector() as selector:
@@ -74,6 +76,11 @@ class SocketServer(object):
             self.__shutdown_request = False
             self.__is_shut_down.set()
 
+    def send_message_response(self, stream_id, request_id, message, request_headers):
+        if request_id in self.protocol_by_request_id:
+            protocol = self.protocol_by_request_id[request_id]
+            protocol.send_data(stream_id, message, request_headers)
+
     def accept_wrapper(self, socket, selector):
         conn, addr = socket.accept()  # Should be ready to read
         conn.setblocking(False)
@@ -88,7 +95,11 @@ class SocketServer(object):
         if mask & selectors.EVENT_READ:
             recv_data = sock.recv(1024)  # Should be ready to read
             if recv_data:
-                protocol.data_received(recv_data)
+                stream = protocol.dataReceived(recv_data)
+                if stream and self.listener:
+                    request_id, meta, body = self.listener.parse_message(stream)
+                    self.protocol_by_request_id[request_id] = protocol
+                    self.listener.on_receive_message(request_id, meta, body)
             else:
                 self.close_and_unregister(sock, selector)
         if mask & selectors.EVENT_WRITE:
@@ -107,7 +118,7 @@ class Protocol:
         self.selector = selector
         self.sock = sock
 
-    def data_received(self, data):
+    def dataReceived(self, data):
         raise NotImplementedError("This method should be overridden")
 
     def get_data_to_send(self):
@@ -166,7 +177,7 @@ class H2Connection(Protocol):
             # self.connectionLost(Failure())
             self.connectionLost()
             return
-
+        stream_done = None
         for event in events:
             if isinstance(event, h2.events.RequestReceived):
                 self._requestReceived(event)
@@ -174,6 +185,7 @@ class H2Connection(Protocol):
                 self._requestDataReceived(event)
             elif isinstance(event, h2.events.StreamEnded):
                 self._requestEnded(event)
+                stream_done = self.streams[event.stream_id]
             elif isinstance(event, h2.events.StreamReset):
                 self._requestAborted(event)
             elif isinstance(event, h2.events.WindowUpdated):
@@ -187,6 +199,7 @@ class H2Connection(Protocol):
         dataToSend = self.conn.data_to_send()
         if dataToSend:
             self._data_to_send.append(dataToSend)
+        return stream_done
 
     def connectionLost(self):
         """
@@ -220,6 +233,7 @@ class H2Connection(Protocol):
         """
         stream = self.streams[event.stream_id]
         stream.requestComplete()
+        return self.streams[event.stream_id]
 
     def _requestAborted(self, event):
         """
@@ -288,6 +302,11 @@ class H2Connection(Protocol):
         """
         stream = self.streams[event.stream_id]
         stream.receiveDataChunk(event.data, event.flow_controlled_length)
+
+    def send_data(self, stream_id, serialized_message, request_headers):
+        self.conn.send_data(stream_id, serialized_message, end_stream=True)
+        self.conn.send_headers(stream_id, request_headers)
+        self._data_to_send.append(self.conn.data_to_send())
 
 
 class H2Stream:
