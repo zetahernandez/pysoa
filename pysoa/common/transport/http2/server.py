@@ -4,14 +4,18 @@ from __future__ import (
 )
 
 from pysoa.common.metrics import TimerResolution
+from pysoa.common.serializer.msgpack_serializer import MsgpackSerializer
 from pysoa.common.transport.base import ServerTransport
 from pysoa.common.transport.exceptions import (
     InvalidMessageError,
     MessageReceiveTimeout,
 )
-from pysoa.common.transport.http2.settings import Http2TransportSchema
-
 from pysoa.common.transport.http2.core import Http2TransportCore
+from pysoa.common.transport.http2.settings import Http2TransportSchema
+from pysoa.common.transport.http2.socketserver import (
+    H2Connection,
+    SocketServer,
+)
 
 
 class Http2ServerTransport(ServerTransport):
@@ -21,10 +25,15 @@ class Http2ServerTransport(ServerTransport):
 
         self.server = server
         # self.core = Http2TransportCore(service_name=service_name, metrics=metrics, metrics_prefix='server', **kwargs)
-        self.core = SocketServer()
-        self.core.receive_message(self)
-        self.core.on_receive_message(self)
+        self.core = SocketServer(
+            server_address=(
+                kwargs['http_host'],
+                int(kwargs['http_port'])
+            ), protocol_class=H2Connection)
+        # self.core.receive_message(self)
+        # self.core.on_receive_message(self)
         self._default_serializer = None
+        self.default_serializer_config = {'object': MsgpackSerializer}
 
     @property
     def default_serializer(self):
@@ -38,8 +47,7 @@ class Http2ServerTransport(ServerTransport):
     def parse_message(self, stream):
         if stream.stream_id:
             serializer = self.default_serializer
-
-            message = serializer.blob_to_dict(stream.stream_data)
+            message = serializer.blob_to_dict(stream.stream_data.getvalue())
             request_id = message.get('request_id')
             meta = message.get('meta', {})
             meta['stream_id'] = stream.stream_id
@@ -50,7 +58,7 @@ class Http2ServerTransport(ServerTransport):
             )
 
     def on_receive_message(self, request_id, meta, body):
-        self.server.server.handle_request(
+        self.server.handle_request(
             request_id,
             meta,
             body,
@@ -58,7 +66,7 @@ class Http2ServerTransport(ServerTransport):
 
     def run(self):
         try:
-            self.socket_server.init_selectors(listener=self)
+            self.core.init_selector(listener=self)
         except MessageReceiveTimeout:
             self.server.perform_idle_actions()
             return
@@ -76,7 +84,7 @@ class Http2ServerTransport(ServerTransport):
             if stop_timer:
                 timer.stop()
 
-    def send_message_response(self, request_id, meta, body):
+    def send_response_message(self, request_id, meta, body):
         message = {'request_id': request_id, 'meta': meta, 'body': body}
 
         serializer = self.default_serializer
@@ -84,13 +92,18 @@ class Http2ServerTransport(ServerTransport):
         serialized_message = serializer.dict_to_blob(message)
 
         request_headers = [
-            (':method', 'POST'),
-            (':authority', ''),
-            (':scheme', 'http'),
-            (':path', '/{}'.format(self.service_name)),
-            ('content-type', 'application/octet-stream'),
+            (':status', '200'),
+            ('content-type', 'application/json'),
             ('content-length', str(len(serialized_message))),
-            ('user-agent', 'hyper-h2/1.0.0'),
+            ('server', 'asyncio-h2'),
+
+            # (':method', 'POST'),
+            # (':authority', ''),
+            # (':scheme', 'http'),
+            # (':path', '/{}'.format(self.service_name)),
+            # ('content-type', 'application/octet-stream'),
+            # ('content-length', str(len(serialized_message))),
+            # ('user-agent', 'hyper-h2/1.0.0'),
         ]
 
         self.core.send_message_response(

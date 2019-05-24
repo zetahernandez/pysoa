@@ -29,6 +29,7 @@ class SocketServer(object):
         self.socket = socket.socket(self.address_family, self.socket_type)
         self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.socket.setblocking(False)
+        self.protocol_by_request_id = {}
 
         self.server_bind()
         self.server_activate()
@@ -109,6 +110,7 @@ class SocketServer(object):
 
     def close_and_unregister(self, sock, selector):
         selector.unregister(sock)
+        # TODO
         sock.close()
 
 
@@ -135,8 +137,8 @@ class H2Connection(Protocol):
         )
         self.conn = h2.connection.H2Connection(config=config)
         self.streams = {}
-        self.connectionMade()
         self._data_to_send = collections.deque()
+        self.connectionMade()
         self._stillProducing = True
 
     def dataToSend(self):
@@ -177,6 +179,7 @@ class H2Connection(Protocol):
             # self.connectionLost(Failure())
             self.connectionLost()
             return
+
         stream_done = None
         for event in events:
             if isinstance(event, h2.events.RequestReceived):
@@ -257,7 +260,7 @@ class H2Connection(Protocol):
         @param streamID: The ID of the stream to clean up state for.
         @type streamID: L{int}
         """
-        del self._outboundStreamQueues[streamID]
+        # del self._outboundStreamQueues[streamID]
         # self.priority.remove_stream(streamID)
         del self.streams[streamID]
         # cleanupCallback = self._streamCleanupCallbacks.pop(streamID)
@@ -278,7 +281,7 @@ class H2Connection(Protocol):
         )
         self.streams[event.stream_id] = stream
         # self._streamCleanupCallbacks[event.stream_id] = Deferred()
-        self._outboundStreamQueues[event.stream_id] = collections.deque()
+        # self._outboundStreamQueues[event.stream_id] = collections.deque()
 
         # # Add the stream to the priority tree but immediately block it.
         # try:
@@ -304,8 +307,8 @@ class H2Connection(Protocol):
         stream.receiveDataChunk(event.data, event.flow_controlled_length)
 
     def send_data(self, stream_id, serialized_message, request_headers):
-        self.conn.send_data(stream_id, serialized_message, end_stream=True)
         self.conn.send_headers(stream_id, request_headers)
+        self.conn.send_data(stream_id, serialized_message, end_stream=True)
         self._data_to_send.append(self.conn.data_to_send())
 
 
@@ -340,12 +343,13 @@ class H2Stream:
             different to C{len(data)}.
         @type flowControlledLength: L{int}
         """
-        if not self.producing:
-            # Buffer data.
-            self._inboundDataBuffer.append((data, flowControlledLength))
-        else:
-            self._request.handleContentChunk(data)
-            self._conn.openStreamWindow(self.streamID, flowControlledLength)
+        self.stream_data.write(data)
+        # if not self.producing:
+        #     # Buffer data.
+        self._inboundDataBuffer.append((data, flowControlledLength))
+        # else:
+        #     self._request.handleContentChunk(data)
+        #     self._conn.openStreamWindow(self.streamID, flowControlledLength)
 
     def requestComplete(self):
         """
