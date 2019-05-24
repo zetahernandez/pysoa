@@ -103,7 +103,7 @@ class SocketServer(object):
             else:
                 self.close_and_unregister(sock, selector)
         if mask & selectors.EVENT_WRITE:
-            data_to_send = protocol.get_data_to_send()
+            data_to_send = protocol.dataToSend()
             if data_to_send:
                 sent = sock.sendall(data_to_send)  # Should be ready to write
 
@@ -121,7 +121,7 @@ class Protocol:
     def dataReceived(self, data):
         raise NotImplementedError("This method should be overridden")
 
-    def get_data_to_send(self):
+    def dataToSend(self):
         raise NotImplementedError("This method should be overridden")
 
 
@@ -139,7 +139,7 @@ class H2Connection(Protocol):
         self._data_to_send = collections.deque()
         self._stillProducing = True
 
-    def get_data_to_send(self):
+    def dataToSend(self):
         try:
             return self._data_to_send.pop()
         except IndexError:

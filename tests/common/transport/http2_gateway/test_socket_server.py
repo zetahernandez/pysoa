@@ -1,4 +1,3 @@
-import io
 import select
 import socket
 import test.support
@@ -16,14 +15,14 @@ test.support.requires("network")
 
 
 class EchoProtocol(Protocol):
-    def __init__(self, transport):
-        super().__init__(transport)
+    def __init__(self, transport, _, __):
+        super().__init__(transport, _, __)
         self.buffer = b''
 
-    def data_received(self, data):
+    def dataReceived(self, data):
         self.buffer += data
 
-    def get_data_to_send(self):
+    def dataToSend(self):
         result = self.buffer
         self.buffer = b''
         return result
@@ -85,7 +84,7 @@ def receive(sock, n, timeout=20):
         raise RuntimeError("timed out on %r" % (sock,))
 
 
-def stream_examine(proto, addr):
+def assert_stream(proto, addr):
     s = socket.socket(proto, socket.SOCK_STREAM)
     s.connect(addr)
     s.sendall(TEST_STR)
@@ -99,4 +98,4 @@ def stream_examine(proto, addr):
 
 
 def test_socket_server_echo():
-    run_server(SocketServer, EchoProtocol, stream_examine)
+    run_server(SocketServer, EchoProtocol, assert_stream)
