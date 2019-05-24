@@ -110,7 +110,6 @@ class SocketServer(object):
 
     def close_and_unregister(self, sock, selector):
         selector.unregister(sock)
-        # TODO
         sock.close()
 
 
@@ -196,9 +195,8 @@ class H2Connection(Protocol):
             elif isinstance(event, h2.events.PriorityUpdated):
                 self._handlePriorityUpdate(event)
             elif isinstance(event, h2.events.ConnectionTerminated):
-                self.socket_server.close_and_unregister(self.sock, self.selector)
-                # self.connectionLost(ConnectionLost("Remote peer sent GOAWAY"))
                 self.connectionLost()
+                # self.connectionLost(ConnectionLost("Remote peer sent GOAWAY"))
         dataToSend = self.conn.data_to_send()
         if dataToSend:
             self._data_to_send.append(dataToSend)
