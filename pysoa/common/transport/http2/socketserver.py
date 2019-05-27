@@ -100,23 +100,23 @@ class SocketServer(object):
             try:
                 recv_data = conn.recv(1024)  # Should be ready to read
             except ConnectionResetError:
-                self.close_and_unregister()
-
-            if recv_data:
-                try:
-                    stream = protocol.data_received(recv_data)
-                except ProtocolError:
-                    data_to_send = protocol.data_to_send()
-                    if data_to_send:
-                        conn.sendall(data_to_send)
-                    self.close_and_unregister(conn)
-                else:
-                    if stream and self.listener:
-                        request_id, meta, body = self.listener.parse_message(stream)
-                        self.protocol_by_request_id[request_id] = protocol
-                        self.listener.on_receive_message(request_id, meta, body)
-            else:
                 self.close_and_unregister(conn)
+            else:
+                if recv_data:
+                    try:
+                        stream = protocol.data_received(recv_data)
+                    except ProtocolError:
+                        data_to_send = protocol.data_to_send()
+                        if data_to_send:
+                            conn.sendall(data_to_send)
+                        self.close_and_unregister(conn)
+                    else:
+                        if stream and self.listener:
+                            request_id, meta, body = self.listener.parse_message(stream)
+                            self.protocol_by_request_id[request_id] = protocol
+                            self.listener.on_receive_message(request_id, meta, body)
+                else:
+                    self.close_and_unregister(conn)
 
         if mask & selectors.EVENT_WRITE:
             data_to_send = protocol.data_to_send()
