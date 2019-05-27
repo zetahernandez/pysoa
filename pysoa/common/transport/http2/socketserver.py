@@ -64,72 +64,99 @@ class SocketServer(object):
         self.__is_shut_down.clear()
         try:
             with selectors.DefaultSelector() as selector:
-                selector.register(self.socket, selectors.EVENT_READ)
+                self.selector = selector
+
+                self.selector.register(self.socket, selectors.EVENT_READ)
                 while not self.__shutdown_request:
-                    events = selector.select(poll_interval)
+                    events = self.selector.select(poll_interval)
 
                     for key, mask in events:
                         if key.data is None:
-                            self.accept_wrapper(key.fileobj, selector)
+                            self._accept_wrapper(key.fileobj)
                         else:
-                            self.service_connection(key, mask, selector)
+                            self._service_connection(key, mask)
         finally:
             self.__shutdown_request = False
             self.__is_shut_down.set()
 
-    def send_message_response(self, stream_id, request_id, message, request_headers):
+    def send_message_response(self, stream_id, request_id, message, response_headers):
         if request_id in self.protocol_by_request_id:
-            protocol = self.protocol_by_request_id[request_id]
-            protocol.send_data(stream_id, message, request_headers)
+            protocol = self.protocol_by_request_id.pop(request_id)
+            protocol.send_data(stream_id, message, response_headers)
 
-    def accept_wrapper(self, socket, selector):
+    def _accept_wrapper(self, socket):
         conn, addr = socket.accept()  # Should be ready to read
         conn.setblocking(False)
 
-        protocol = self.protocol_class(self, selector, socket)
+        protocol = self.protocol_class()
         events = selectors.EVENT_READ | selectors.EVENT_WRITE
-        selector.register(conn, events, data=protocol)
+        self.selector.register(conn, events, data=protocol)
 
-    def service_connection(self, key, mask, selector):
-        sock = key.fileobj
+    def _service_connection(self, key, mask):
+        conn = key.fileobj
         protocol = key.data
-        if mask & selectors.EVENT_READ:
-            recv_data = sock.recv(1024)  # Should be ready to read
-            if recv_data:
-                stream = protocol.dataReceived(recv_data)
-                if stream and self.listener:
-                    request_id, meta, body = self.listener.parse_message(stream)
-                    self.protocol_by_request_id[request_id] = protocol
-                    self.listener.on_receive_message(request_id, meta, body)
-            else:
-                self.close_and_unregister(sock, selector)
-        if mask & selectors.EVENT_WRITE:
-            data_to_send = protocol.dataToSend()
-            if data_to_send:
-                sent = sock.sendall(data_to_send)  # Should be ready to write
 
-    def close_and_unregister(self, sock, selector):
-        selector.unregister(sock)
-        sock.close()
+        if mask & selectors.EVENT_READ:
+            try:
+                recv_data = conn.recv(1024)  # Should be ready to read
+            except ConnectionResetError:
+                self.close_and_unregister()
+
+            if recv_data:
+                try:
+                    stream = protocol.data_received(recv_data)
+                except ProtocolError:
+                    data_to_send = protocol.data_to_send()
+                    if data_to_send:
+                        conn.sendall(data_to_send)
+                    self.close_and_unregister(conn)
+                else:
+                    if stream and self.listener:
+                        request_id, meta, body = self.listener.parse_message(stream)
+                        self.protocol_by_request_id[request_id] = protocol
+                        self.listener.on_receive_message(request_id, meta, body)
+            else:
+                self.close_and_unregister(conn)
+
+        if mask & selectors.EVENT_WRITE:
+            data_to_send = protocol.data_to_send()
+            if data_to_send:
+                conn.sendall(data_to_send)  # Should be ready to write
+
+    def close_and_unregister(self, conn):
+        try:
+            self.selector.unregister(conn)
+        except ValueError:
+            pass
+
+        try:
+            conn.shutdown(2)
+        except socket.error:
+            pass
+        try:
+            conn.close()
+        except socket.error:
+            pass
 
 
 class Protocol:
-    def __init__(self, socket_server, selector, sock):
-        self.socket_server = socket_server
-        self.selector = selector
-        self.sock = sock
 
-    def dataReceived(self, data):
+    def data_received(self, data):
         raise NotImplementedError("This method should be overridden")
 
-    def dataToSend(self):
+    def data_to_send(self):
         raise NotImplementedError("This method should be overridden")
+
+
+class ProtocolError(Exception):
+    """ An error on the protocol layer
+    """
 
 
 class H2Connection(Protocol):
 
-    def __init__(self, socket_server, selector, sock):
-        super().__init__(socket_server, selector, sock)
+    def __init__(self):
+        super().__init__()
 
         config = h2.config.H2Configuration(
             client_side=False, header_encoding=None
@@ -140,7 +167,7 @@ class H2Connection(Protocol):
         self.connectionMade()
         self._stillProducing = True
 
-    def dataToSend(self):
+    def data_to_send(self):
         try:
             return self._data_to_send.pop()
         except IndexError:
@@ -156,7 +183,7 @@ class H2Connection(Protocol):
         self.conn.initiate_connection()
         self._data_to_send.append(self.conn.data_to_send())
 
-    def dataReceived(self, data):
+    def data_received(self, data):
         """
         Called whenever a chunk of data is received from the transport.
 
@@ -169,15 +196,12 @@ class H2Connection(Protocol):
             events = self.conn.receive_data(data)
         except h2.exceptions.ProtocolError:
             # A remote protocol error terminates the connection.
-            dataToSend = self.conn.data_to_send()
-            # Send data and close the connection, this will write
-            # in the socket when the selector ¡s in reading mode
+            data_to_send = self.conn.data_to_send()
+            if data_to_send:
+                self._data_to_send.append(data_to_send)
 
-            self.socket.sendall(dataToSend)
-            self.socket_server.close_and_unregister(self.sock, self.selector)
-            # self.connectionLost(Failure())
             self.connectionLost()
-            return
+            raise ProtocolError()
 
         stream_done = None
         for event in events:
@@ -186,8 +210,7 @@ class H2Connection(Protocol):
             elif isinstance(event, h2.events.DataReceived):
                 self._requestDataReceived(event)
             elif isinstance(event, h2.events.StreamEnded):
-                self._requestEnded(event)
-                stream_done = self.streams[event.stream_id]
+                stream_done = self._requestEnded(event)
             elif isinstance(event, h2.events.StreamReset):
                 self._requestAborted(event)
             elif isinstance(event, h2.events.WindowUpdated):
@@ -196,10 +219,10 @@ class H2Connection(Protocol):
                 self._handlePriorityUpdate(event)
             elif isinstance(event, h2.events.ConnectionTerminated):
                 self.connectionLost()
-                # self.connectionLost(ConnectionLost("Remote peer sent GOAWAY"))
-        dataToSend = self.conn.data_to_send()
-        if dataToSend:
-            self._data_to_send.append(dataToSend)
+
+        data_to_send = self.conn.data_to_send()
+        if data_to_send:
+            self._data_to_send.append(data_to_send)
         return stream_done
 
     def connectionLost(self):
@@ -209,7 +232,7 @@ class H2Connection(Protocol):
         Informs all outstanding response handlers that the connection has been
         lost, and cleans up all internal state.
         """
-        self._stillProducing = False
+        # self._stillProducing = False
         # self.setTimeout(None)
 
         # for stream in self.streams.values():
@@ -304,8 +327,8 @@ class H2Connection(Protocol):
         stream = self.streams[event.stream_id]
         stream.receiveDataChunk(event.data, event.flow_controlled_length)
 
-    def send_data(self, stream_id, serialized_message, request_headers):
-        self.conn.send_headers(stream_id, request_headers)
+    def send_data(self, stream_id, serialized_message, response_headers):
+        self.conn.send_headers(stream_id, response_headers)
         self.conn.send_data(stream_id, serialized_message, end_stream=True)
         self._data_to_send.append(self.conn.data_to_send())
 
@@ -317,11 +340,12 @@ class H2Stream:
 
         """
         self.stream_id = stream_id
+        self.completed = False
         self.h2_connection = h2_connection
         self.headers = headers
-        self.producing = True
+        # self.producing = True
         self.stream_data = io.BytesIO()
-        self._inboundDataBuffer = collections.deque()
+        # self._inboundDataBuffer = collections.deque()
 
     def __del__(self):
         self.stream_data.close()
@@ -344,7 +368,7 @@ class H2Stream:
         self.stream_data.write(data)
         # if not self.producing:
         #     # Buffer data.
-        self._inboundDataBuffer.append((data, flowControlledLength))
+        # self._inboundDataBuffer.append((data, flowControlledLength))
         # else:
         #     self._request.handleContentChunk(data)
         #     self._conn.openStreamWindow(self.streamID, flowControlledLength)

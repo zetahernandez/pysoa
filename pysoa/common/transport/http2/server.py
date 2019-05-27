@@ -28,10 +28,10 @@ class Http2ServerTransport(ServerTransport):
         self.core = SocketServer(
             server_address=(
                 kwargs['http_host'],
-                int(kwargs['http_port'])
-            ), protocol_class=H2Connection)
-        # self.core.receive_message(self)
-        # self.core.on_receive_message(self)
+                int(kwargs['http_port']),
+            ),
+            protocol_class=H2Connection
+        )
         self._default_serializer = None
         self.default_serializer_config = {'object': MsgpackSerializer}
 
@@ -47,10 +47,12 @@ class Http2ServerTransport(ServerTransport):
     def parse_message(self, stream):
         if stream.stream_id:
             serializer = self.default_serializer
+
             message = serializer.blob_to_dict(stream.stream_data.getvalue())
             request_id = message.get('request_id')
             meta = message.get('meta', {})
             meta['stream_id'] = stream.stream_id
+
             return (
                 request_id,
                 message.get('meta', {}),
@@ -91,26 +93,19 @@ class Http2ServerTransport(ServerTransport):
 
         serialized_message = serializer.dict_to_blob(message)
 
-        request_headers = [
+        response_headers = [
             (':status', '200'),
             ('content-type', 'application/json'),
             ('content-length', str(len(serialized_message))),
-            ('server', 'asyncio-h2'),
-
-            # (':method', 'POST'),
-            # (':authority', ''),
-            # (':scheme', 'http'),
-            # (':path', '/{}'.format(self.service_name)),
-            # ('content-type', 'application/octet-stream'),
-            # ('content-length', str(len(serialized_message))),
-            # ('user-agent', 'hyper-h2/1.0.0'),
+            ('server', 'pysoa-h2'),
         ]
 
         self.core.send_message_response(
             meta['stream_id'],
             request_id,
             serialized_message,
-            request_headers,
+            response_headers,
         )
+
 
 Http2ServerTransport.settings_schema = Http2TransportSchema(Http2ServerTransport)
