@@ -289,6 +289,9 @@ class Http2ClientTransportCore(object):
         validator=attr.validators.instance_of(six.text_type),
     )
 
+    def __attrs_post_init__(self):
+        self.responses = []
+
     # noinspection PyAttributeOutsideInit
     @property
     def default_serializer(self):
@@ -350,7 +353,7 @@ class Http2ClientTransportCore(object):
                 serializer = self.default_serializer
 
                 message = serializer.blob_to_dict(body)
-                self.response = (request_id, message.get('meta', {}), message.get('body'))
+                self.responses.append((request_id, message.get('meta', {}), message.get('body')))
                 break
 
     def data_received(self, data, serialized_message):
@@ -363,14 +366,19 @@ class Http2ClientTransportCore(object):
             self.transport.sendall(self.conn.data_to_send())
             for event in events:
                 if isinstance(event, ResponseReceived):
+                    print('ResponseReceived')
                     self.handleResponse(event.headers, event.stream_id)
                 elif isinstance(event, DataReceived):
+                    print('DataReceived')
                     self.handleData(event.data, event.stream_id)
                 elif isinstance(event, StreamEnded):
+                    print('StreamEnded')
                     return self.endStream(event.stream_id)
                 elif isinstance(event, SettingsAcknowledged):
+                    print('SettingsAcknowledged')
                     self.settingsAcked(event, serialized_message)
                 elif isinstance(event, StreamReset):
+                    print('StreamReset')
                     self.transport.close()
                 else:
                     print(event)
@@ -445,4 +453,4 @@ class Http2ClientTransportCore(object):
         return stream_id, headers, body
 
     def receive_message(self, receive_timeout_in_seconds):
-        return self.response
+        return self.responses.pop(0)
