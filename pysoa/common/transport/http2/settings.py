@@ -6,15 +6,11 @@ from __future__ import (
 from conformity import fields
 
 from pysoa.common.serializer.base import Serializer as BaseSerializer
-from pysoa.common.settings import BasicClassSchema
 
 
-class Http2TransportSchema(BasicClassSchema):
+class Http2TransportSchema(fields.Dictionary):
     contents = {
-        'path': fields.UnicodeString(
-            description='The path to the Redis client or server transport, in the format `module.name:ClassName`',
-        ),
-        'kwargs': fields.Dictionary(
+        'backed_layer_kwargs': fields.Dictionary(
             {
                 'http_host': fields.UnicodeString(),
                 'http_port': fields.UnicodeString(),
@@ -35,8 +31,8 @@ class Http2TransportSchema(BasicClassSchema):
                 'receive_timeout_in_seconds': fields.Integer(
                     description='How long to block waiting on a message to be received',
                 ),
-                'default_serializer_config': BasicClassSchema(
-                    object_type=BaseSerializer,
+                'default_serializer_config': fields.ClassConfigurationSchema(
+                    base_class=BaseSerializer,
                     description='The configuration for the serializer this transport should use',
                 ),
             },

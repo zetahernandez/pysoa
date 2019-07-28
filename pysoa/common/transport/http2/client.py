@@ -14,15 +14,17 @@ from pysoa.common.transport.exceptions import MessageReceiveTimeout
 from pysoa.common.transport.http2.settings import Http2TransportSchema
 
 from pysoa.common.transport.http2.core import Http2ClientTransportCore
+from conformity import fields
 
 
+@fields.ClassConfigurationSchema.provider(Http2TransportSchema())
 class Http2ClientTransport(ClientTransport):
 
     def __init__(self, service_name, metrics, **kwargs):
         super(Http2ClientTransport, self).__init__(service_name, metrics)
 
         self.client_id = uuid.uuid4().hex
-        self.core = Http2ClientTransportCore(service_name=service_name, metrics=metrics, metrics_prefix='client', **kwargs)
+        self.core = Http2ClientTransportCore(service_name=service_name, metrics=metrics, metrics_prefix='client', **kwargs['backed_layer_kwargs'])
         self._requests_outstanding = 0
 
     def send_request_message(self, request_id, meta, body, message_expiry_in_seconds=None):
@@ -45,6 +47,3 @@ class Http2ClientTransport(ClientTransport):
         else:
             # This tells Client.get_all_responses to stop waiting for more.
             return None, None, None
-
-
-Http2ClientTransport.settings_schema = Http2TransportSchema(Http2ClientTransport)

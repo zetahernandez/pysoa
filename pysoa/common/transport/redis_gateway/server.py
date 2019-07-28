@@ -2,7 +2,6 @@ from __future__ import (
     absolute_import,
     unicode_literals,
 )
-import signal
 
 from conformity import fields
 
@@ -21,7 +20,7 @@ from pysoa.common.transport.redis_gateway.utils import make_redis_queue_name
 @fields.ClassConfigurationSchema.provider(RedisTransportSchema())
 class RedisServerTransport(ServerTransport):
 
-    def __init__(self, service_name, metrics, server=None, **kwargs):
+    def __init__(self, service_name, metrics, **kwargs):
         """
         In addition to the two named positional arguments, this constructor expects keyword arguments abiding by the
         Redis transport settings schema.
@@ -38,18 +37,6 @@ class RedisServerTransport(ServerTransport):
 
         self._receive_queue_name = make_redis_queue_name(service_name)
         self.core = RedisTransportCore(service_name=service_name, metrics=metrics, metrics_prefix='server', **kwargs)
-        self.server = server
-
-    def run(self):
-        while not self.server.shutting_down:
-            try:
-                request_id, meta, job_request = self.receive_request_message()
-                self.server.handle_request(request_id, meta, job_request)
-                self.server.metrics.commit()
-            except MessageReceiveTimeout:
-                # no new message, nothing to do
-                self.server.perform_idle_actions()
-                return
 
     def receive_request_message(self):
         timer = self.metrics.timer('server.transport.redis_gateway.receive', resolution=TimerResolution.MICROSECONDS)
