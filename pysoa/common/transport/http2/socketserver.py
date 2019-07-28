@@ -1,9 +1,15 @@
+from __future__ import (
+    absolute_import,
+    unicode_literals,
+)
+
 import collections
 import io
+import queue
 import selectors
 import socket
 import threading
-import types
+from uuid import uuid4
 
 import h2.config
 import h2.connection
@@ -20,12 +26,13 @@ class SocketServer(object):
 
     request_queue_size = 5
 
-    def __init__(self, server_address, protocol_class):
-
+    def __init__(self, server_address, protocol_class, request_queue=None, response_queue=None):
         self.__is_shut_down = threading.Event()
-        self.protocol_class = protocol_class
-
         self.server_address = server_address
+        self.protocol_class = protocol_class
+        self.request_queue = request_queue
+        self.response_queue = response_queue
+
         self.socket = socket.socket(self.address_family, self.socket_type)
         self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.socket.setblocking(False)
@@ -59,8 +66,7 @@ class SocketServer(object):
         self.__shutdown_request = True
         self.__is_shut_down.wait()
 
-    def init_selector(self, poll_interval=0.5, listener=None):
-        self.listener = listener
+    def init_selector(self, poll_interval=0.5):
         self.__is_shut_down.clear()
         try:
             with selectors.DefaultSelector() as selector:
@@ -75,20 +81,31 @@ class SocketServer(object):
                             self._accept_wrapper(key.fileobj)
                         else:
                             self._service_connection(key, mask)
+
+                    self.check_responses()
         finally:
             self.__shutdown_request = False
             self.__is_shut_down.set()
 
-    def send_message_response(self, stream_id, request_id, message, response_headers):
-        if request_id in self.protocol_by_request_id:
-            protocol = self.protocol_by_request_id.pop(request_id)
+    def check_responses(self):
+        """ Check for responses in response queue and tell the protocol to send it """
+
+        try:
+            protocol_key, stream_id, request_id, message, response_headers = self.response_queue.get_nowait()
+        except queue.Empty:
+            pass
+        else:
+            protocol = self.protocol_by_request_id.pop(protocol_key)
             protocol.send_data(stream_id, message, response_headers)
 
     def _accept_wrapper(self, socket):
+        """ New connection from a client is aquired """
         conn, addr = socket.accept()  # Should be ready to read
         conn.setblocking(False)
 
         protocol = self.protocol_class()
+        self.protocol_by_request_id[protocol.key] = protocol
+
         events = selectors.EVENT_READ | selectors.EVENT_WRITE
         self.selector.register(conn, events, data=protocol)
 
@@ -111,10 +128,11 @@ class SocketServer(object):
                             conn.sendall(data_to_send)
                         self.close_and_unregister(conn)
                     else:
-                        if stream and self.listener:
-                            request_id, meta, body = self.listener.parse_message(stream)
-                            self.protocol_by_request_id[request_id] = protocol
-                            self.listener.on_receive_message(request_id, meta, body)
+                        if stream and self.request_queue:
+                            self.request_queue.put_nowait(stream)
+                            # request_id, meta, body = self.listener.parse_message(stream)
+                            # self.protocol_by_request_id[request_id] = protocol
+                            # self.listener.on_receive_message(request_id, meta, body)
                 else:
                     self.close_and_unregister(conn)
 
@@ -157,10 +175,10 @@ class H2Connection(Protocol):
 
     def __init__(self):
         super().__init__()
-
         config = h2.config.H2Configuration(
             client_side=False, header_encoding=None
         )
+        self.key = uuid4().hex
         self.conn = h2.connection.H2Connection(config=config)
         self.streams = {}
         self._data_to_send = collections.deque()

@@ -129,7 +129,6 @@ class Server(object):
         self.transport = self.settings['transport']['object'](
             self.service_name,
             self.metrics,
-            self,
             **self.settings['transport'].get('kwargs', {})
         )
 
@@ -169,105 +168,6 @@ class Server(object):
         self._heartbeat_file_path = None
         self._heartbeat_file_last_update = 0
         self._forked_process_id = forked_process_id
-
-    def handle_request(self, request_id, meta, job_request):
-        """
-        Retrieves the next request from the transport, or returns if it times out (no request has been made), and then
-        processes that request, sends its response, and returns when done.
-        """
-        # if not self._idle_timer:
-        #     # This method may be called multiple times before receiving a request, so we only create and start a timer
-        #     # if it's the first call or if the idle timer was stopped on the last call.
-        #     self._idle_timer = self.metrics.timer('server.idle_time', resolution=TimerResolution.MICROSECONDS)
-        #     self._idle_timer.start()
-
-        # # Get the next JobRequest
-        # try:
-        #     request_id, meta, job_request = self.transport.receive_request_message()
-        # except MessageReceiveTimeout:
-        #     # no new message, nothing to do
-        #     self.perform_idle_actions()
-        #     return
-        # # We are no longer idle, so stop the timer and reset for the next idle period
-        # self._idle_timer.stop()
-        # self._idle_timer = None
-
-        try:
-            PySOALogContextFilter.set_logging_request_context(request_id=request_id, **job_request['context'])
-        except TypeError:
-            # Non unicode keys in job_request['context'] will break keywording of a function call.
-            # Try to recover by coercing the keys
-            PySOALogContextFilter.set_logging_request_context(
-                request_id=request_id,
-                **{six.text_type(k): v for k, v in six.iteritems(job_request['context'])}
-            )
-
-        request_for_logging = self.logging_dict_wrapper_class(job_request)
-        self.job_logger.log(self.request_log_success_level, 'Job request: %s', request_for_logging)
-
-        try:
-            self.perform_pre_request_actions()
-
-            # Process and run the Job
-            job_response = self.process_job(job_request)
-
-            # Prepare the JobResponse for sending by converting it to a message dict
-            try:
-                response_message = attr.asdict(job_response, dict_factory=UnicodeKeysDict)
-            except Exception as e:
-                self.metrics.counter('server.error.response_conversion_failure').increment()
-                job_response = self.handle_job_exception(e, variables={'job_response': job_response})
-                response_message = attr.asdict(job_response, dict_factory=UnicodeKeysDict)
-
-            response_for_logging = self.logging_dict_wrapper_class(response_message)
-
-            # Send the response message
-            try:
-                if not job_request['control'].get('suppress_response', False):
-                    self.transport.send_response_message(request_id, meta, response_message)
-            except MessageTooLarge as e:
-                self.metrics.counter('server.error.response_too_large').increment()
-                job_response = self.handle_job_error_code(
-                    ERROR_CODE_RESPONSE_TOO_LARGE,
-                    'Could not send the response because it was too large',
-                    request_for_logging,
-                    response_for_logging,
-                    extra={'serialized_length_in_bytes': e.message_size_in_bytes},
-                )
-                self.transport.send_response_message(
-                    request_id,
-                    meta,
-                    attr.asdict(job_response, dict_factory=UnicodeKeysDict),
-                )
-            except InvalidField:
-                self.metrics.counter('server.error.response_not_serializable').increment()
-                job_response = self.handle_job_error_code(
-                    ERROR_CODE_RESPONSE_NOT_SERIALIZABLE,
-                    'Could not send the response because it failed to serialize',
-                    request_for_logging,
-                    response_for_logging,
-                )
-                self.transport.send_response_message(
-                    request_id,
-                    meta,
-                    attr.asdict(job_response, dict_factory=UnicodeKeysDict),
-                )
-            finally:
-                if job_response.errors or any(a.errors for a in job_response.actions):
-                    if (
-                        self.request_log_error_level > self.request_log_success_level and
-                        self.job_logger.getEffectiveLevel() > self.request_log_success_level
-                    ):
-                        # When we originally logged the request, it may have been hidden because the effective logging
-                        # level threshold was greater than the level at which we logged the request. So re-log the
-                        # request at the error level, if set higher.
-                        self.job_logger.log(self.request_log_error_level, 'Job request: %s', request_for_logging)
-                    self.job_logger.log(self.request_log_error_level, 'Job response: %s', response_for_logging)
-                else:
-                    self.job_logger.log(self.request_log_success_level, 'Job response: %s', response_for_logging)
-        finally:
-            PySOALogContextFilter.clear_logging_request_context()
-            self.perform_post_request_actions()
 
     def handle_next_request(self):
         """
@@ -796,13 +696,12 @@ class Server(object):
 
         # noinspection PyBroadException
         try:
-            # while not self.shutting_down:
+            while not self.shutting_down:
                 # reset harakiri timeout
-                # signal.alarm(self.settings['harakiri']['timeout'])
+                signal.alarm(self.settings['harakiri']['timeout'])
                 # Get, process, and execute the next JobRequest
-                # self.handle_next_request()
-            self.transport.run()
-            # self.metrics.commit()
+                self.handle_next_request()
+                self.metrics.commit()
         except MessageReceiveError:
             self.logger.exception('Error receiving message from transport; shutting down')
         except Exception:
