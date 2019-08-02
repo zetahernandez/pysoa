@@ -96,8 +96,6 @@ class SocketServer(object):
         conn, addr = socket.accept()  # Should be ready to read
         conn.setblocking(False)
 
-        import logging
-        logging.getLogger('pysoa.server').debug("hola")
         protocol = self.protocol_class()
         self.protocol_by_request_id[protocol.key] = protocol
 

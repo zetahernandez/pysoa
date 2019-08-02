@@ -44,6 +44,7 @@ from pysoa.common.transport.exceptions import (
 from pysoa.common.transport.http2.protocol import H2Connection as Http2Connection
 from pysoa.common.transport.http2.socketserver import SocketServer
 from pysoa.common.transport.redis_gateway.constants import DEFAULT_MAXIMUM_MESSAGE_BYTES_CLIENT
+from hyper.http20.connection import HTTP20Connection
 
 
 EXPONENTIAL_BACK_OFF_FACTOR = 4.0
@@ -343,7 +344,9 @@ class Http2ClientTransportCore(object):
     )
 
     def __attrs_post_init__(self):
-        self.responses = []
+        self._default_serializer = None
+        self.requests = collections.deque()
+
 
     # noinspection PyAttributeOutsideInit
     @property
@@ -355,25 +358,8 @@ class Http2ClientTransportCore(object):
 
         return self._default_serializer
 
-    @property
-    def transport(self):
-        if self._socket:
-            return self._socket
-        self._socket = socket.socket(family=socket.AF_INET, type=socket.SOCK_STREAM)
-        self._socket.connect((self.http_host, self.http_port))
-
-        return self._socket
-
     def send_request_message(self, request_id, meta, body, message_expiry_in_seconds=None):
-        config = H2Configuration(client_side=True, header_encoding='utf-8')
-        self.conn = H2Connection(config=config)
-        self._socket = None
-        self.stream_data = {}
-        self.request_made = False
-        self._default_serializer = None
-        if request_id is None:
-            raise InvalidMessageError('No request ID')
-
+        connection = HTTP20Connection(host=self.http_host, port=self.http_port)
         message = {'request_id': request_id, 'meta': meta, 'body': body}
 
         serializer = self.default_serializer
@@ -392,125 +378,24 @@ class Http2ClientTransportCore(object):
                 'content-type:{};'.format(serializer.mime_type).encode('utf-8') + serialized_message
             )
 
-        self.conn.initiate_connection()
-        self.transport.sendall(self.conn.data_to_send())
-
-        while True:
-            data = self.transport.recv(65535)
-            if not data:
-                raise MessageReceiveTimeout('No message received for service')  # .format(self.service_name))
-
-            stream_id, headers, body = self.data_received(data, serialized_message)
-
-            if stream_id:
-                serializer = self.default_serializer
-                if body.startswith(b'content-type'):
-                    # TODO: Breaking change: Assume all messages start with a content type. This should not be done until
-                    # TODO all servers and clients have Step 2 code. This will be a Step 3 breaking change.
-                    header, body = body.split(b';', 1)
-                    mime_type = header.split(b':', 1)[1].decode('utf-8').strip()
-                    if mime_type in Serializer.all_supported_mime_types:
-                        serializer = Serializer.resolve_serializer(mime_type)
-
-                message = serializer.blob_to_dict(body)
-                self.responses.append((request_id, message.get('meta', {}), message.get('body')))
-                break
-
-    def data_received(self, data, serialized_message):
-        try:
-            events = self.conn.receive_data(data)
-        except ProtocolError:
-            self.socket_conn.sendall(self.conn.data_to_send())
-            self.transport.close()
-        else:
-            self.transport.sendall(self.conn.data_to_send())
-            for event in events:
-                if isinstance(event, ResponseReceived):
-                    print('ResponseReceived')
-                    self.handleResponse(event.headers, event.stream_id)
-                elif isinstance(event, DataReceived):
-                    print('DataReceived')
-                    self.handleData(event.data, event.stream_id)
-                elif isinstance(event, StreamEnded):
-                    print('StreamEnded')
-                    return self.endStream(event.stream_id)
-                elif isinstance(event, SettingsAcknowledged):
-                    print('SettingsAcknowledged')
-                    self.settingsAcked(event, serialized_message)
-                elif isinstance(event, StreamReset):
-                    print('StreamReset')
-                    self.transport.close()
-                else:
-                    print(event)
-
-                data = self.conn.data_to_send()
-                if data:
-                    self.transport.sendall(data)
-        return None, None, None
-
-    def settingsAcked(self, event, serialized_message):
-        # Having received the remote settings change, lets send our request.
-        if not self.request_made:
-            self.sendRequest(1, serialized_message)
-
-    def sendRequest(self, stream_id, serialized_message):
-        request_headers = [
-            (':method', 'POST'),
-            (':authority', ''),
-            (':scheme', 'http'),
-            (':path', '/{}'.format(self.service_name)),
-            ('content-type', 'application/octet-stream'),
-            ('content-length', str(len(serialized_message))),
-            ('user-agent', 'hyper-h2/1.0.0'),
-        ]
-        self.conn.send_headers(stream_id, request_headers)
-        self.request_made = True
-
-        self.conn.send_data(stream_id, serialized_message, end_stream=True)
-
-        self.transport.sendall(self.conn.data_to_send())
-
-    def handleResponse(self, headers, stream_id):
-        headers = collections.OrderedDict(headers)
-
-        # Store off the request data.
-        request_data = RequestData(headers, io.BytesIO())
-        self.stream_data[stream_id] = request_data
-
-    def handleData(self, data, stream_id):
-        """
-        We've received some data on a stream. If that stream is one we're
-        expecting data on, save it off. Otherwise, reset the stream.
-        """
-        try:
-            stream_data = self.stream_data[stream_id]
-        except KeyError:
-            self.conn.reset_stream(
-                stream_id, error_code=ErrorCodes.PROTOCOL_ERROR
-            )
-        else:
-            stream_data.data.write(data)
-
-    def endStream(self, stream_id):
-        """
-        We call this when the stream is cleanly ended by the remote peer. That
-        means that the response is complete.
-
-        Because this code only makes a single HTTP/2 request, once we receive
-        the complete response we can safely tear the connection down and stop
-        the reactor. We do that as cleanly as possible.
-        """
-        self.request_complete = True
-        self.conn.close_connection()
-        self.transport.sendall(self.conn.data_to_send())
-        self.transport.close()
-        self._socket = None
-
-        request_data = self.stream_data[stream_id]
-        headers = request_data.headers
-        body = request_data.data.getvalue()
-
-        return stream_id, headers, body
+        request = connection.request('POST', '/', body=serialized_message)
+        self.requests.append((connection, request))
 
     def receive_message(self, receive_timeout_in_seconds):
-        return self.responses.pop(0)
+        connection, request = self.requests.popleft()
+        response = connection.get_response(request)
+
+        body = response.read()
+        # headers = response.headers
+
+        serializer = self.default_serializer
+        if body.startswith(b'content-type'):
+            # TODO: Breaking change: Assume all messages start with a content type. This should not be done until
+            # TODO all servers and clients have Step 2 code. This will be a Step 3 breaking change.
+            header, body = body.split(b';', 1)
+            mime_type = header.split(b':', 1)[1].decode('utf-8').strip()
+            if mime_type in Serializer.all_supported_mime_types:
+                serializer = Serializer.resolve_serializer(mime_type)
+
+        message = serializer.blob_to_dict(body)
+        return (message.get('request_id'), message.get('meta', {}), message.get('body'))
