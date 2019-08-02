@@ -24,7 +24,7 @@ class Http2ClientTransport(ClientTransport):
         super(Http2ClientTransport, self).__init__(service_name, metrics)
 
         self.client_id = uuid.uuid4().hex
-        self.core = Http2ClientTransportCore(service_name=service_name, metrics=metrics, metrics_prefix='client', **kwargs['backed_layer_kwargs'])
+        self.core = Http2ClientTransportCore(service_name=service_name, metrics=metrics, metrics_prefix='client', **kwargs['backend_layer_kwargs'])
         self._requests_outstanding = 0
 
     def send_request_message(self, request_id, meta, body, message_expiry_in_seconds=None):

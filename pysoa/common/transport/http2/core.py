@@ -5,51 +5,79 @@ from __future__ import (
 
 import collections
 import io
+import logging
+import queue
+import random
 import socket
+import threading
+import time
 
 import attr
+import six
+
 from h2.config import H2Configuration
 from h2.connection import H2Connection
 from h2.errors import ErrorCodes
 from h2.events import (
-    ConnectionTerminated,
     DataReceived,
-    RequestReceived,
-    StreamEnded,
     ResponseReceived,
     SettingsAcknowledged,
+    StreamEnded,
     StreamReset,
 )
 from h2.exceptions import ProtocolError
-import six
 
+from pysoa.common.logging import RecursivelyCensoredDictWrapper
 from pysoa.common.metrics import (
     MetricsRecorder,
     NoOpMetricsRecorder,
     TimerResolution,
 )
+from pysoa.common.serializer.base import Serializer
 from pysoa.common.serializer.msgpack_serializer import MsgpackSerializer
 from pysoa.common.transport.exceptions import (
     InvalidMessageError,
     MessageReceiveError,
     MessageReceiveTimeout,
     MessageSendError,
-    MessageTooLarge,
 )
+from pysoa.common.transport.http2.protocol import H2Connection as Http2Connection
+from pysoa.common.transport.http2.socketserver import SocketServer
+from pysoa.common.transport.redis_gateway.constants import DEFAULT_MAXIMUM_MESSAGE_BYTES_CLIENT
 
+
+EXPONENTIAL_BACK_OFF_FACTOR = 4.0
 
 RequestData = collections.namedtuple('RequestData', ['headers', 'data'])
 
+_oversized_message_logger = logging.getLogger('pysoa.transport.oversized_message')
+
+
+def run_socket_server(request_queue, response_queue, **kwargs):
+
+    socket_server = SocketServer(
+        server_address=(
+            kwargs['http_host'],
+            int(kwargs['http_port']),
+        ),
+        protocol_class=Http2Connection,
+        request_queue=request_queue,
+        response_queue=response_queue,
+    )
+    socket_server.init_selector()
+
 
 @attr.s()
-class Http2TransportCore(object):
+class Http2ServerTransportCore(object):
 
-    http_host = attr.ib(
-        default='127.0.0.1',
+    backend_layer_kwargs = attr.ib(
+        # Keyword args for the backend layer (Standard Redis and Sentinel Redis modes)
+        default={},
+        validator=attr.validators.instance_of(dict),
     )
 
-    http_port = attr.ib(
-        default=55933,
+    log_messages_larger_than_bytes = attr.ib(
+        default=DEFAULT_MAXIMUM_MESSAGE_BYTES_CLIENT,
         converter=int,
     )
 
@@ -68,6 +96,18 @@ class Http2TransportCore(object):
     metrics_prefix = attr.ib(
         default='',
         validator=attr.validators.instance_of(six.text_type),
+    )
+
+    queue_capacity = attr.ib(
+        # The capacity for queues to which messages are sent
+        default=10000,
+        converter=int,
+    )
+
+    queue_full_retries = attr.ib(
+        # Number of times to retry when the send queue is full
+        default=10,
+        converter=int,
     )
 
     receive_timeout_in_seconds = attr.ib(
@@ -89,6 +129,21 @@ class Http2TransportCore(object):
         validator=attr.validators.instance_of(six.text_type),
     )
 
+    def __attrs_post_init__(self):
+        self.requests_queue = queue.Queue(maxsize=self.queue_capacity)
+        self.responses_queue = queue.Queue(maxsize=self.queue_capacity)
+
+        self.socker_server_daemon = threading.Thread(
+            target=run_socket_server,
+            args=(self.requests_queue, self.responses_queue),
+            kwargs=self.backend_layer_kwargs
+        )
+        self.socker_server_daemon.setDaemon(True)
+        self.socker_server_daemon.start()
+
+        self._default_serializer = None
+
+
     # noinspection PyAttributeOutsideInit
     @property
     def default_serializer(self):
@@ -99,146 +154,144 @@ class Http2TransportCore(object):
 
         return self._default_serializer
 
-    @property
-    def transport(self):
-        if self._socket:
-            return self._socket
-        self._socket = socket.socket(family=socket.AF_INET, type=socket.SOCK_STREAM)
-        self._socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self._socket.settimeout(10.0)
-        self._socket.bind((self.http_host, self.http_port))
-        self._socket.listen(5)
+    def send_message(self, request_id, meta, body, message_expiry_in_seconds=None):
 
-        return self._socket
+        protocol_key = meta.get('protocol_key')
+        stream_id = meta.get('stream_id')
 
-    def send_message_response(self, request_id, meta, body):
+        if request_id is None or protocol_key is None or stream_id is None:
+            raise InvalidMessageError('No request ID')
+
+        if message_expiry_in_seconds:
+            message_expiry = time.time() + message_expiry_in_seconds
+        else:
+            message_expiry = time.time() + self.message_expiry_in_seconds
+
+        meta['__expiry__'] = message_expiry
+
         message = {'request_id': request_id, 'meta': meta, 'body': body}
 
-        serializer = self.default_serializer
+        with self._get_timer('send.serialize'):
+            serializer = self.default_serializer
+            if 'serializer' in meta:
+                # TODO: Breaking change: Assume a MIME type is always specified. This should not be done until all
+                # TODO servers and clients have Step 2 code. This will be a Step 3 breaking change.
+                serializer = meta.pop('serializer')
+            serialized_message = (
+                'content-type:{};'.format(serializer.mime_type).encode('utf-8') + serializer.dict_to_blob(message)
+            )
 
-        serialized_message = serializer.dict_to_blob(message)
+        message_size_in_bytes = len(serialized_message)
 
-        response_headers = (
+        response_headers = [
             (':status', '200'),
             ('content-type', 'application/json'),
-            ('content-length', str(len(serialized_message))),
-            ('server', 'asyncio-h2'),
-        )
-        self.conn.send_headers(meta.get('stream_id'), response_headers)
-        self.conn.send_data(meta.get('stream_id'), serialized_message, end_stream=True)
+            ('content-length', str(message_size_in_bytes)),
+            ('server', 'pysoa-h2'),
+        ]
 
-        self.socket_conn.sendall(self.conn.data_to_send())
-
-        while True:
-            data = self.socket_conn.recv(65535)
-            if not data:
-                break
-
-            self.data_received(data)
-
-    def receive_message(self):
-        try:
-            socket_conn, address = self.transport.accept()
-        except socket.timeout:
-            raise MessageReceiveTimeout('Timeout')
-
-        self.conn.initiate_connection()
-        self.socket_conn = socket_conn
-
-        data = self.conn.data_to_send()
-        if data:
-            self.socket_conn.sendall(data)
-
-        while True:
-            data = self.socket_conn.recv(65535)
-            if not data:
-                raise MessageReceiveTimeout('No message received for service')  # .format(self.service_name))
-
-            stream_id, headers, body = self.data_received(data)
-            if stream_id:
-                serializer = self.default_serializer
-
-                message = serializer.blob_to_dict(body)
-                request_id = message.get('request_id')
-                meta = message.get('meta', {})
-                meta['stream_id'] = stream_id
-                return request_id, message.get('meta', {}), message.get('body')
-
-    def data_received(self, data):
-        try:
-            events = self.conn.receive_data(data)
-        except ProtocolError:
-            self.socket_conn.sendall(self.conn.data_to_send())
-            self.transport.close()
-        else:
-            self.socket_conn.sendall(self.conn.data_to_send())
-            for event in events:
-                if isinstance(event, RequestReceived):
-                    self.request_received(event.headers, event.stream_id)
-                elif isinstance(event, DataReceived):
-                    self.receive_data(event.data, event.stream_id)
-                elif isinstance(event, StreamEnded):
-                    return self.stream_complete(event.stream_id)
-                elif isinstance(event, ConnectionTerminated):
-                    config = H2Configuration(client_side=False, header_encoding='utf-8')
-                    self.conn = H2Connection(config=config)
-                    self.transport.close()
-                    self._socket = None
-
-                data = self.conn.data_to_send()
-                if data:
-                    self.transport.write(data)
-
-        return None, None, None
-
-    def request_received(self, headers, stream_id):
-        headers = collections.OrderedDict(headers)
-        method = headers[':method']
-
-        # We only support GET and POST.
-        if method not in ('GET', 'POST'):
-            self.return_405(headers, stream_id)
-            return
-
-        # Store off the request data.
-        request_data = RequestData(headers, io.BytesIO())
-        self.stream_data[stream_id] = request_data
-
-    def receive_data(self, data, stream_id):
-        """
-        We've received some data on a stream. If that stream is one we're
-        expecting data on, save it off. Otherwise, reset the stream.
-        """
-        try:
-            stream_data = self.stream_data[stream_id]
-        except KeyError:
-            self.conn.reset_stream(
-                stream_id, error_code=ErrorCodes.PROTOCOL_ERROR
+        if self.log_messages_larger_than_bytes and message_size_in_bytes > self.log_messages_larger_than_bytes:
+            _oversized_message_logger.warning(
+                'Oversized message sent for PySOA service {}'.format(self.service_name),
+                extra={'data': {
+                    'message': RecursivelyCensoredDictWrapper(message),
+                    'serialized_length_in_bytes': message_size_in_bytes,
+                    'threshold': self.log_messages_larger_than_bytes,
+                }},
             )
-        else:
-            stream_data.data.write(data)
+        for i in range(-1, self.queue_full_retries):
+            if i >= 0:
+                time.sleep((2 ** i + random.random()) / self.EXPONENTIAL_BACK_OFF_FACTOR)
+                self._get_counter('send.responses_queue_full_retry').increment()
+                self._get_counter('send.responses_queue_full_retry.retry_{}'.format(i + 1)).increment()
+            try:
+                with self._get_timer('send.send_message_response_http2_queue'):
+                    self.responses_queue.put((
+                        protocol_key,
+                        stream_id,
+                        request_id,
+                        serialized_message,
+                        response_headers,
+                    ))
+                return
+            except queue.Full:
+                continue
+            except Exception as e:
+                self._get_counter('send.error.unknown').increment()
+                raise MessageSendError(
+                    'Unknown error sending message for service {}'.format(self.service_name),
+                    six.text_type(type(e).__name__),
+                    *e.args
+                )
 
-    def stream_complete(self, stream_id):
-        """
-        When a stream is complete, we can send our response.
-        """
+        self._get_counter('send.error.responses_queue_full').increment()
+        raise MessageSendError(
+            'Http2 responses queue  was full after {retries} retries'.format(
+                retries=self.queue_full_retries,
+            )
+        )
+
+    def receive_message(self, receive_timeout_in_seconds=None):
         try:
-            request_data = self.stream_data[stream_id]
-        except KeyError:
-            # Just return, we probably 405'd this already
-            return
+            with self._get_timer('recieve.get_from_requests_queue'):
+                stream = self.requests_queue.get(
+                    timeout=receive_timeout_in_seconds or self.receive_timeout_in_seconds,
+                )
+        except queue.Empty:
+            raise MessageReceiveTimeout('No message received for service {}'.format(self.service_name))
+        except Exception as e:
+            self._get_counter('receive.error.unknown').increment()
+            raise MessageReceiveError(
+                'Unknown error receiving message for service {}'.format(self.service_name),
+                six.text_type(type(e).__name__),
+                *e.args
+            )
 
-        headers = request_data.headers
-        body = request_data.data.getvalue()
+        serialized_message = stream.stream_data.getvalue()
 
-        return stream_id, headers, body
+        with self._get_timer('receive.deserialize'):
+            serializer = self.default_serializer
+            if serialized_message.startswith(b'content-type'):
+                # TODO: Breaking change: Assume all messages start with a content type. This should not be done until
+                # TODO all servers and clients have Step 2 code. This will be a Step 3 breaking change.
+                header, serialized_message = serialized_message.split(b';', 1)
+                mime_type = header.split(b':', 1)[1].decode('utf-8').strip()
+                if mime_type in Serializer.all_supported_mime_types:
+                    serializer = Serializer.resolve_serializer(mime_type)
 
-    def __attrs_post_init__(self):
-        config = H2Configuration(client_side=False, header_encoding='utf-8')
-        self.conn = H2Connection(config=config)
-        self._socket = None
-        self.stream_data = {}
-        self._default_serializer = None
+            message = serializer.blob_to_dict(serialized_message)
+            message.setdefault('meta', {})['serializer'] = serializer
+
+            meta = message.get('meta')
+            meta['stream_id'] = stream.stream_id
+            meta['protocol_key'] = stream.h2_connection.key
+
+        if self._is_message_expired(message):
+            self._get_counter('receive.error.message_expired').increment()
+            raise MessageReceiveTimeout('Message expired for service {}'.format(self.service_name))
+
+        request_id = message.get('request_id')
+        if request_id is None:
+            self._get_counter('receive.error.no_request_id').increment()
+            raise InvalidMessageError('No request ID for service {}'.format(self.service_name))
+
+        return request_id, message.get('meta', {}), message.get('body')
+
+    @staticmethod
+    def _is_message_expired(message):
+        return message.get('meta', {}).get('__expiry__') and message['meta']['__expiry__'] < time.time()
+
+    def _get_metric_name(self, name):
+        if self.metrics_prefix:
+            return '{prefix}.transport.http2_gateway.{name}'.format(prefix=self.metrics_prefix, name=name)
+        else:
+            return 'transport.http2_gateway.{}'.format(name)
+
+    def _get_counter(self, name):
+        return self.metrics.counter(self._get_metric_name(name))
+
+    def _get_timer(self, name):
+        return self.metrics.timer(self._get_metric_name(name), resolution=TimerResolution.MICROSECONDS)
 
 
 @attr.s()
@@ -351,6 +404,13 @@ class Http2ClientTransportCore(object):
 
             if stream_id:
                 serializer = self.default_serializer
+                if body.startswith(b'content-type'):
+                    # TODO: Breaking change: Assume all messages start with a content type. This should not be done until
+                    # TODO all servers and clients have Step 2 code. This will be a Step 3 breaking change.
+                    header, body = body.split(b';', 1)
+                    mime_type = header.split(b':', 1)[1].decode('utf-8').strip()
+                    if mime_type in Serializer.all_supported_mime_types:
+                        serializer = Serializer.resolve_serializer(mime_type)
 
                 message = serializer.blob_to_dict(body)
                 self.responses.append((request_id, message.get('meta', {}), message.get('body')))

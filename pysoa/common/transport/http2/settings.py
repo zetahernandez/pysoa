@@ -10,7 +10,7 @@ from pysoa.common.serializer.base import Serializer as BaseSerializer
 
 class Http2TransportSchema(fields.Dictionary):
     contents = {
-        'backed_layer_kwargs': fields.Dictionary(
+        'backend_layer_kwargs': fields.Dictionary(
             {
                 'http_host': fields.UnicodeString(),
                 'http_port': fields.UnicodeString(),
@@ -49,4 +49,4 @@ class Http2TransportSchema(fields.Dictionary):
 
     optional_keys = ()
 
-    description = 'The settings for the Redis transport'
+    description = 'The settings for the Http2 transport'
