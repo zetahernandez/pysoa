@@ -3,12 +3,16 @@ from __future__ import (
     unicode_literals,
 )
 
-import queue
-import selectors
+try:
+    import selectors
+except ImportError:
+    import selectors2 as selectors
+
 import socket
 import threading
+import six
 
-from pysoa.common.transport.http2.protocol import ProtocolError
+from pysoa.common.transport.http2_gateway.protocol import ProtocolError
 
 
 class SocketServer(object):
@@ -19,7 +23,7 @@ class SocketServer(object):
 
     request_queue_size = 5
 
-    def __init__(self, server_address, protocol_class, request_queue=None, response_queue=None):
+    def __init__(self, server_address, protocol_class, request_queue, response_queue):
         self.__is_shut_down = threading.Event()
         self.server_address = server_address
         self.protocol_class = protocol_class
@@ -82,10 +86,9 @@ class SocketServer(object):
 
     def check_responses(self):
         """ Check for responses in response queue and tell the protocol to send it """
-
         try:
             protocol_key, stream_id, request_id, message, response_headers = self.response_queue.get_nowait()
-        except queue.Empty:
+        except six.moves.queue.Empty:
             pass
         else:
             protocol = self.protocol_by_request_id.pop(protocol_key)

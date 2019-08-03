@@ -4,28 +4,13 @@ from __future__ import (
 )
 
 import collections
-import io
 import logging
-import queue
 import random
-import socket
 import threading
 import time
 
 import attr
 import six
-
-from h2.config import H2Configuration
-from h2.connection import H2Connection
-from h2.errors import ErrorCodes
-from h2.events import (
-    DataReceived,
-    ResponseReceived,
-    SettingsAcknowledged,
-    StreamEnded,
-    StreamReset,
-)
-from h2.exceptions import ProtocolError
 
 from pysoa.common.logging import RecursivelyCensoredDictWrapper
 from pysoa.common.metrics import (
@@ -41,8 +26,8 @@ from pysoa.common.transport.exceptions import (
     MessageReceiveTimeout,
     MessageSendError,
 )
-from pysoa.common.transport.http2.protocol import H2Connection as Http2Connection
-from pysoa.common.transport.http2.socketserver import SocketServer
+from pysoa.common.transport.http2_gateway.protocol import H2Connection as Http2Connection
+from pysoa.common.transport.http2_gateway.socketserver import SocketServer
 from pysoa.common.transport.redis_gateway.constants import DEFAULT_MAXIMUM_MESSAGE_BYTES_CLIENT
 from hyper.http20.connection import HTTP20Connection
 
@@ -131,8 +116,8 @@ class Http2ServerTransportCore(object):
     )
 
     def __attrs_post_init__(self):
-        self.requests_queue = queue.Queue(maxsize=self.queue_capacity)
-        self.responses_queue = queue.Queue(maxsize=self.queue_capacity)
+        self.requests_queue = six.moves.queue.Queue(maxsize=self.queue_capacity)
+        self.responses_queue = six.moves.queue.Queue(maxsize=self.queue_capacity)
 
         self.socker_server_daemon = threading.Thread(
             target=run_socket_server,
@@ -143,7 +128,6 @@ class Http2ServerTransportCore(object):
         self.socker_server_daemon.start()
 
         self._default_serializer = None
-
 
     # noinspection PyAttributeOutsideInit
     @property
@@ -215,7 +199,7 @@ class Http2ServerTransportCore(object):
                         response_headers,
                     ))
                 return
-            except queue.Full:
+            except six.moves.queue.Full:
                 continue
             except Exception as e:
                 self._get_counter('send.error.unknown').increment()
@@ -238,7 +222,7 @@ class Http2ServerTransportCore(object):
                 stream = self.requests_queue.get(
                     timeout=receive_timeout_in_seconds or self.receive_timeout_in_seconds,
                 )
-        except queue.Empty:
+        except six.moves.queue.Empty:
             raise MessageReceiveTimeout('No message received for service {}'.format(self.service_name))
         except Exception as e:
             self._get_counter('receive.error.unknown').increment()
@@ -298,13 +282,10 @@ class Http2ServerTransportCore(object):
 @attr.s()
 class Http2ClientTransportCore(object):
 
-    http_host = attr.ib(
-        default='127.0.0.1',
-    )
-
-    http_port = attr.ib(
-        default=55933,
-        converter=int,
+    backend_layer_kwargs = attr.ib(
+        # Keyword args for the backend layer (Standard Redis and Sentinel Redis modes)
+        default={},
+        validator=attr.validators.instance_of(dict),
     )
 
     message_expiry_in_seconds = attr.ib(
@@ -346,6 +327,9 @@ class Http2ClientTransportCore(object):
     def __attrs_post_init__(self):
         self._default_serializer = None
         self.requests = collections.deque()
+
+        self.http_host = self.backend_layer_kwargs['http_host']
+        self.http_port = self.backend_layer_kwargs['http_port']
 
 
     # noinspection PyAttributeOutsideInit

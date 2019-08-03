@@ -24,8 +24,9 @@ base_requirements = [
     'msgpack-python~=0.5,>=0.5.2',
     'redis~=2.10',
     'h2~=2.6.2',
-    'hyper',
+    'hyper~=0.7.0',
     'six~=1.10',
+    'selectors2;python_version<"3"',
     'typing;python_version<"3.5"',
 ]
 

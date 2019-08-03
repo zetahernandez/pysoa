@@ -8,8 +8,8 @@ from conformity import fields
 from pysoa.common.metrics import TimerResolution
 from pysoa.common.transport.base import ServerTransport
 from pysoa.common.transport.exceptions import MessageReceiveTimeout
-from pysoa.common.transport.http2.core import Http2ServerTransportCore
-from pysoa.common.transport.http2.settings import Http2TransportSchema
+from pysoa.common.transport.http2_gateway.core import Http2ServerTransportCore
+from pysoa.common.transport.http2_gateway.settings import Http2TransportSchema
 
 
 @fields.ClassConfigurationSchema.provider(Http2TransportSchema())

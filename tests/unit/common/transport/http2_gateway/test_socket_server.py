@@ -1,10 +1,23 @@
+from __future__ import (
+    absolute_import,
+    unicode_literals,
+)
+
 import select
 import socket
 import test.support
-from test.support import reap_threads, verbose, find_unused_port
+from test.support import (
+    find_unused_port,
+    reap_threads,
+    verbose,
+)
 import threading
+from uuid import uuid4
 
-from pysoa.common.transport.http2.socketserver import Protocol, SocketServer
+import six
+
+from pysoa.common.transport.http2_gateway.protocol import Protocol
+from pysoa.common.transport.http2_gateway.socketserver import SocketServer
 
 
 HOST = test.support.HOST
@@ -18,6 +31,7 @@ class EchoProtocol(Protocol):
     def __init__(self):
         super().__init__()
         self.buffer = b''
+        self.key = uuid4().hex
 
     def data_received(self, data):
         self.buffer += data
@@ -29,7 +43,7 @@ class EchoProtocol(Protocol):
 
 
 def make_server(srv_cls, protocol_cls):
-    return srv_cls((HOST, find_unused_port()), protocol_cls)
+    return srv_cls((HOST, find_unused_port()), protocol_cls, six.moves.queue.Queue(), six.moves.queue.Queue())
 
 
 def close_server(server):
