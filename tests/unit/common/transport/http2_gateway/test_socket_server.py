@@ -5,12 +5,8 @@ from __future__ import (
 
 import select
 import socket
-import test.support
-from test.support import (
-    find_unused_port,
-    reap_threads,
-    verbose,
-)
+
+import pytest
 import threading
 from uuid import uuid4
 
@@ -19,12 +15,13 @@ import six
 from pysoa.common.transport.http2_gateway.protocol import Protocol
 from pysoa.common.transport.http2_gateway.socketserver import SocketServer
 
+find_unused_port = pytest.importorskip('test.support.find_unused_port')
+reap_threads = pytest.importorskip('test.support.reap_threads')
+verbose = pytest.importorskip('test.support.verbose')
 
-HOST = test.support.HOST
+HOST = 'localhost'
 
 TEST_STR = b'Echo message\n'
-
-test.support.requires("network")
 
 
 class EchoProtocol(Protocol):

@@ -115,14 +115,22 @@ class Http2ServerTransportCore(object):
         validator=attr.validators.instance_of(six.text_type),
     )
 
+    EXPONENTIAL_BACK_OFF_FACTOR = 4.0
+
     def __attrs_post_init__(self):
         self.requests_queue = six.moves.queue.Queue(maxsize=self.queue_capacity)
         self.responses_queue = six.moves.queue.Queue(maxsize=self.queue_capacity)
 
+        http_host = self.backend_layer_kwargs.get('http_host', '127.0.0.1')
+        http_port = self.backend_layer_kwargs.get('http_port', '60061')
+
         self.socker_server_daemon = threading.Thread(
             target=run_socket_server,
             args=(self.requests_queue, self.responses_queue),
-            kwargs=self.backend_layer_kwargs
+            kwargs={
+                'http_host': http_host,
+                'http_port': http_port,
+            }
         )
         self.socker_server_daemon.setDaemon(True)
         self.socker_server_daemon.start()
@@ -197,7 +205,7 @@ class Http2ServerTransportCore(object):
                         request_id,
                         serialized_message,
                         response_headers,
-                    ))
+                    ), timeout=0)
                 return
             except six.moves.queue.Full:
                 continue
@@ -211,7 +219,7 @@ class Http2ServerTransportCore(object):
 
         self._get_counter('send.error.responses_queue_full').increment()
         raise MessageSendError(
-            'Http2 responses queue  was full after {retries} retries'.format(
+            'Http2 responses queue was full after {retries} retries'.format(
                 retries=self.queue_full_retries,
             )
         )
@@ -219,7 +227,7 @@ class Http2ServerTransportCore(object):
     def receive_message(self, receive_timeout_in_seconds=None):
         try:
             with self._get_timer('recieve.get_from_requests_queue'):
-                stream = self.requests_queue.get(
+                stream_id, protocol_key, serialized_message = self.requests_queue.get(
                     timeout=receive_timeout_in_seconds or self.receive_timeout_in_seconds,
                 )
         except six.moves.queue.Empty:
@@ -231,8 +239,6 @@ class Http2ServerTransportCore(object):
                 six.text_type(type(e).__name__),
                 *e.args
             )
-
-        serialized_message = stream.stream_data.getvalue()
 
         with self._get_timer('receive.deserialize'):
             serializer = self.default_serializer
@@ -248,8 +254,8 @@ class Http2ServerTransportCore(object):
             message.setdefault('meta', {})['serializer'] = serializer
 
             meta = message.get('meta')
-            meta['stream_id'] = stream.stream_id
-            meta['protocol_key'] = stream.h2_connection.key
+            meta['stream_id'] = stream_id
+            meta['protocol_key'] = protocol_key
 
         if self._is_message_expired(message):
             self._get_counter('receive.error.message_expired').increment()
@@ -328,9 +334,8 @@ class Http2ClientTransportCore(object):
         self._default_serializer = None
         self.requests = collections.deque()
 
-        self.http_host = self.backend_layer_kwargs['http_host']
-        self.http_port = self.backend_layer_kwargs['http_port']
-
+        self.http_host = self.backend_layer_kwargs.get('http_host', '127.0.0.1')
+        self.http_port = self.backend_layer_kwargs.get('http_port', '60061')
 
     # noinspection PyAttributeOutsideInit
     @property
