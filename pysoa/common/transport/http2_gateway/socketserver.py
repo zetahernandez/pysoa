@@ -125,11 +125,14 @@ class SocketServer(object):
                         self.close_and_unregister(conn)
                     else:
                         if stream and self.request_queue:
-                            self.request_queue.put_nowait((
-                                stream.stream_id,
-                                stream.h2_connection.key,
-                                stream.stream_data.getvalue(),
-                            ))
+                            try:
+                                self.request_queue.put((
+                                    stream.stream_id,
+                                    stream.h2_connection.key,
+                                    stream.stream_data.getvalue(),
+                                ), timeout=3)
+                            except six.moves.queue.Full:
+                                pass
                             # request_id, meta, body = self.listener.parse_message(stream)
                             # self.protocol_by_request_id[request_id] = protocol
                             # self.listener.on_receive_message(request_id, meta, body)

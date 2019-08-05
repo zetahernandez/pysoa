@@ -26,7 +26,7 @@ class Http2ServerTransport(ServerTransport):
         )
 
     def receive_request_message(self):
-        timer = self.metrics.timer('server.transport.redis_gateway.receive', resolution=TimerResolution.MICROSECONDS)
+        timer = self.metrics.timer('server.transport.http2_gateway.receive', resolution=TimerResolution.MICROSECONDS)
         timer.start()
         stop_timer = True
         try:
@@ -39,5 +39,5 @@ class Http2ServerTransport(ServerTransport):
                 timer.stop()
 
     def send_response_message(self, request_id, meta, body):
-        with self.metrics.timer('server.transport.redis_gateway.send', resolution=TimerResolution.MICROSECONDS):
+        with self.metrics.timer('server.transport.http2_gateway.send', resolution=TimerResolution.MICROSECONDS):
             self.core.send_message(request_id, meta, body)
