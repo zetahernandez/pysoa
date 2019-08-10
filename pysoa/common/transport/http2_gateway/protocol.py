@@ -13,6 +13,7 @@ import h2.errors
 import h2.events
 import h2.exceptions
 
+from h2.settings import SettingCodes
 
 class Protocol:
 
@@ -94,11 +95,28 @@ class H2Connection(Protocol):
                 self._handlePriorityUpdate(event)
             elif isinstance(event, h2.events.ConnectionTerminated):
                 self.connectionLost()
+            elif isinstance(event, h2.events.RemoteSettingsChanged):
+                if SettingCodes.INITIAL_WINDOW_SIZE in event.changed_settings:
+                    self.window_updated(None, 0)
 
         data_to_send = self.conn.data_to_send()
         if data_to_send:
             self._data_to_send.append(data_to_send)
         return stream_done
+
+    def window_updated(self, stream_id, delta):
+        """
+        A window update frame was received. Unblock some number of flow control
+        Futures.
+        """
+        if stream_id and stream_id in self.flow_control_futures:
+            f = self.flow_control_futures.pop(stream_id)
+            f.set_result(delta)
+        elif not stream_id:
+            for f in self.flow_control_futures.values():
+                f.set_result(delta)
+
+            self.flow_control_futures = {}
 
     def connectionLost(self):
         """

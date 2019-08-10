@@ -11,8 +11,11 @@ except ImportError:
 import socket
 import threading
 import six
+import errno
 
 from pysoa.common.transport.http2_gateway.protocol import ProtocolError
+
+SOCKET_RECV_BUFFER_SIZE = 65536
 
 
 class SocketServer(object):
@@ -111,7 +114,7 @@ class SocketServer(object):
 
         if mask & selectors.EVENT_READ:
             try:
-                recv_data = conn.recv(1024)  # Should be ready to read
+                recv_data = conn.recv(SOCKET_RECV_BUFFER_SIZE)  # Should be ready to read
             except ConnectionResetError:
                 self.close_and_unregister(conn)
             else:
@@ -121,7 +124,13 @@ class SocketServer(object):
                     except ProtocolError:
                         data_to_send = protocol.data_to_send()
                         if data_to_send:
-                            conn.sendall(data_to_send)
+                            try:
+                                conn.sendall(data_to_send)
+                            except socket.error as se:
+                                if se.args[0] in (errno.EWOULDBLOCK, errno.ENOBUFS):
+                                    return 0
+                                else:
+                                    self.close_and_unregister(conn)
                         self.close_and_unregister(conn)
                     else:
                         if stream and self.request_queue:
@@ -133,16 +142,16 @@ class SocketServer(object):
                                 ), timeout=3)
                             except six.moves.queue.Full:
                                 pass
-                            # request_id, meta, body = self.listener.parse_message(stream)
-                            # self.protocol_by_request_id[request_id] = protocol
-                            # self.listener.on_receive_message(request_id, meta, body)
                 else:
                     self.close_and_unregister(conn)
 
         if mask & selectors.EVENT_WRITE:
             data_to_send = protocol.data_to_send()
             if data_to_send:
-                conn.sendall(data_to_send)  # Should be ready to write
+                try:
+                    conn.sendall(data_to_send)  # Should be ready to write
+                except socket.error:
+                    self.close_and_unregister(conn)
 
     def close_and_unregister(self, conn):
         try:
