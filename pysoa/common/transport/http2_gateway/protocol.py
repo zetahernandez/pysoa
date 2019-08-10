@@ -15,6 +15,7 @@ import h2.exceptions
 
 from h2.settings import SettingCodes
 
+
 class Protocol:
 
     def data_received(self, data):
@@ -95,9 +96,9 @@ class H2Connection(Protocol):
                 self._handlePriorityUpdate(event)
             elif isinstance(event, h2.events.ConnectionTerminated):
                 self.connectionLost()
-            elif isinstance(event, h2.events.RemoteSettingsChanged):
-                if SettingCodes.INITIAL_WINDOW_SIZE in event.changed_settings:
-                    self.window_updated(None, 0)
+            # elif isinstance(event, h2.events.RemoteSettingsChanged):
+            #     if SettingCodes.INITIAL_WINDOW_SIZE in event.changed_settings:
+            #         self.window_updated(None, 0)
 
         data_to_send = self.conn.data_to_send()
         if data_to_send:
