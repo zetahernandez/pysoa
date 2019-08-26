@@ -2,7 +2,7 @@ import threading
 
 class BaseHTTP2BackendThread(threading.Thread):
 
-    def __init__(self, requests_queue, responses_queue, **backend_layer_config):
+    def __init__(self, requests_queue, responses_queue, backend_layer_config):
         threading.Thread.__init__(self, daemon=True)
 
         self.requests_queue = requests_queue

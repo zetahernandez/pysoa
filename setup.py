@@ -53,7 +53,7 @@ h2_client_requirements = [
 
 h2_server_requirements = [
     'h2',
-    'twisted[http2]',
+    'twisted @ git+https://github.com/twisted/twisted.git@trunk#egg=twisted',
 ]
 
 setup(

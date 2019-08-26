@@ -130,7 +130,7 @@ class Http2ServerTransportCore(object):
     def backend_layer(self):
         kwargs = {
             'requests_queue': self.requests_queue,
-            'response_queue': self.responses_queue,
+            'responses_queue': self.responses_queue,
             'backend_layer_config': self.backend_layer_kwargs
         }
 
@@ -150,11 +150,10 @@ class Http2ServerTransportCore(object):
         return self._default_serializer
 
     def send_message(self, request_id, meta, body, message_expiry_in_seconds=None):
-
         protocol_key = meta.get('protocol_key')
         stream_id = meta.get('stream_id')
 
-        if request_id is None or protocol_key is None or stream_id is None:
+        if request_id is None:
             raise InvalidMessageError('No request ID')
 
         if message_expiry_in_seconds:
