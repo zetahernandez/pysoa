@@ -20,7 +20,7 @@ class Http2TransportSchema(fields.Dictionary):
         ),
         'backend_type': fields.Constant(
             *HTTP2_BACKEND_TYPES,
-            description='Which backend (h2 or twisted) should be used for this Http2 transport'
+            description='Which backend (hyper-h2 or twisted) should be used for this Http2 transport'
         ),
         'message_expiry_in_seconds': fields.Integer(
             description='How long after a message is sent that it is considered expired, dropped from queue',

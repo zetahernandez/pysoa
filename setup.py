@@ -49,10 +49,13 @@ test_requirements = [
 h2_client_requirements = [
     'h2~=2.6.2',
     'hyper~=0.7.0',
+    'twisted @ git+https://github.com/twisted/twisted.git@trunk#egg=twisted',
+
 ]
 
 h2_server_requirements = [
-    'h2',
+    'hyper~=0.7.0',
+    'h2~=3.1.1',
     'twisted @ git+https://github.com/twisted/twisted.git@trunk#egg=twisted',
 ]
 

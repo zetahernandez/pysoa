@@ -29,10 +29,10 @@ from pysoa.common.transport.exceptions import (
     MessageReceiveTimeout,
     MessageSendError,
 )
-from pysoa.common.transport.http2_gateway.backend.h2 import H2BackendThread
+from pysoa.common.transport.http2_gateway.backend.h2 import HyperH2BackendThread
 from pysoa.common.transport.http2_gateway.backend.twisted import TwistedHTTP2BackendThread
 from pysoa.common.transport.http2_gateway.constants import (
-    HTTP2_BACKEND_TYPE_H2,
+    HTTP2_BACKEND_TYPE_HYPER_H2,
     HTTP2_BACKEND_TYPE_TWISTED,
     HTTP2_BACKEND_TYPES,
 )
@@ -137,7 +137,7 @@ class Http2ServerTransportCore(object):
         if self.backend_type == HTTP2_BACKEND_TYPE_TWISTED:
             return TwistedHTTP2BackendThread(**kwargs)
         else:
-            return H2BackendThread(**kwargs)
+            return HyperH2BackendThread(**kwargs)
 
     # noinspection PyAttributeOutsideInit
     @property
