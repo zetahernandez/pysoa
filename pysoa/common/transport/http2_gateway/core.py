@@ -29,7 +29,7 @@ from pysoa.common.transport.exceptions import (
     MessageReceiveTimeout,
     MessageSendError,
 )
-from pysoa.common.transport.http2_gateway.backend.h2 import HyperH2BackendThread
+from pysoa.common.transport.http2_gateway.backend.hyper_h2 import HyperH2BackendThread
 from pysoa.common.transport.http2_gateway.backend.twisted import TwistedHTTP2BackendThread
 from pysoa.common.transport.http2_gateway.constants import (
     HTTP2_BACKEND_TYPE_HYPER_H2,
