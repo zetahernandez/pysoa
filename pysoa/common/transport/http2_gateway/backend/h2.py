@@ -11,8 +11,8 @@ class H2BackendThread(BaseHTTP2BackendThread):
 
         self.socket_server = SocketServer(
             server_address=(
-                kwargs['http_host'],
-                int(kwargs['http_port']),
+                self.backend_layer_config['http_host'],
+                int(self.backend_layer_config['http_port']),
             ),
             protocol_class=H2Connection,
             request_queue=self.requests_queue,
