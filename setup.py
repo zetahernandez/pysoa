@@ -23,8 +23,6 @@ base_requirements = [
     'enum34;python_version<"3.4"',
     'msgpack-python~=0.5,>=0.5.2',
     'redis~=2.10',
-    'h2~=2.6.2',
-    'hyper~=0.7.0',
     'six~=1.10',
     'selectors2;python_version<"3"',
     'typing;python_version<"3.5"',
@@ -48,6 +46,15 @@ test_requirements = [
     'coverage~=4.5',
 ] + test_plan_requirements
 
+h2_client_requirements = [
+    'h2~=2.6.2',
+    'hyper~=0.7.0',
+]
+
+h2_server_requirements = [
+    'h2',
+    'twisted[http2]',
+]
 
 setup(
     name='pysoa',
@@ -67,6 +74,8 @@ setup(
         'testing': test_requirements,
         'test_helpers': test_helper_requirements,
         'test_plans': test_plan_requirements,
+        'h2_client': h2_client_requirements,
+        'h2_server': h2_server_requirements,
     },
     entry_points={
         'pytest11': [

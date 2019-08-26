@@ -6,11 +6,14 @@ from __future__ import (
 import collections
 import logging
 import random
+import ssl as pssl
 import threading
 import time
 
 import attr
 import six
+
+from hyper.http20.connection import HTTP20Connection
 
 from pysoa.common.logging import RecursivelyCensoredDictWrapper
 from pysoa.common.metrics import (
@@ -26,10 +29,14 @@ from pysoa.common.transport.exceptions import (
     MessageReceiveTimeout,
     MessageSendError,
 )
-from pysoa.common.transport.http2_gateway.protocol import H2Connection as Http2Connection
-from pysoa.common.transport.http2_gateway.socketserver import SocketServer
+from pysoa.common.transport.http2_gateway.backend.h2 import H2BackendThread
+from pysoa.common.transport.http2_gateway.backend.twisted import TwistedHTTP2BackendThread
+from pysoa.common.transport.http2_gateway.constants import (
+    HTTP2_BACKEND_TYPE_H2,
+    HTTP2_BACKEND_TYPE_TWISTED,
+    HTTP2_BACKEND_TYPES,
+)
 from pysoa.common.transport.redis_gateway.constants import DEFAULT_MAXIMUM_MESSAGE_BYTES_CLIENT
-from hyper.http20.connection import HTTP20Connection
 
 
 EXPONENTIAL_BACK_OFF_FACTOR = 4.0
@@ -39,22 +46,15 @@ RequestData = collections.namedtuple('RequestData', ['headers', 'data'])
 _oversized_message_logger = logging.getLogger('pysoa.transport.oversized_message')
 
 
-def run_socket_server(request_queue, response_queue, **kwargs):
-
-    socket_server = SocketServer(
-        server_address=(
-            kwargs['http_host'],
-            int(kwargs['http_port']),
-        ),
-        protocol_class=Http2Connection,
-        request_queue=request_queue,
-        response_queue=response_queue,
-    )
-    socket_server.init_selector()
+def valid_backend_type(_, __, value):
+    if not value or value not in HTTP2_BACKEND_TYPES:
+        raise ValueError('backend_type must be one of {}, got {}'.format(HTTP2_BACKEND_TYPES, value))
 
 
 @attr.s()
 class Http2ServerTransportCore(object):
+
+    backend_type = attr.ib(validator=valid_backend_type)
 
     backend_layer_kwargs = attr.ib(
         # Keyword args for the backend layer (Standard Redis and Sentinel Redis modes)
@@ -121,21 +121,23 @@ class Http2ServerTransportCore(object):
         self.requests_queue = six.moves.queue.Queue(maxsize=self.queue_capacity)
         self.responses_queue = six.moves.queue.Queue(maxsize=self.queue_capacity)
 
-        http_host = self.backend_layer_kwargs.get('http_host', '127.0.0.1')
-        http_port = self.backend_layer_kwargs.get('http_port', '60061')
-
-        self.socker_server_daemon = threading.Thread(
-            target=run_socket_server,
-            args=(self.requests_queue, self.responses_queue),
-            kwargs={
-                'http_host': http_host,
-                'http_port': http_port,
-            }
-        )
-        self.socker_server_daemon.setDaemon(True)
-        self.socker_server_daemon.start()
+        # Run backend layer thread
+        self.backend_layer.start()
 
         self._default_serializer = None
+
+    @property
+    def backend_layer(self):
+        kwargs = {
+            'requests_queue': self.requests_queue,
+            'response_queue': self.responses_queue,
+            'backend_layer_config': self.backend_layer_kwargs
+        }
+
+        if self.backend_type == HTTP2_BACKEND_TYPE_TWISTED:
+            return TwistedHTTP2BackendThread(**kwargs)
+        else:
+            return H2BackendThread(**kwargs)
 
     # noinspection PyAttributeOutsideInit
     @property
@@ -288,6 +290,8 @@ class Http2ServerTransportCore(object):
 @attr.s()
 class Http2ClientTransportCore(object):
 
+    backend_type = attr.ib(validator=valid_backend_type)
+
     backend_layer_kwargs = attr.ib(
         # Keyword args for the backend layer (Standard Redis and Sentinel Redis modes)
         default={},
@@ -337,6 +341,19 @@ class Http2ClientTransportCore(object):
         self.http_host = self.backend_layer_kwargs.get('http_host', '127.0.0.1')
         self.http_port = self.backend_layer_kwargs.get('http_port', '60061')
 
+        self.ssl_context = None
+        self.secure = False
+
+        # Twisted only supports tls connections for http2
+        if self.backend_type == HTTP2_BACKEND_TYPE_TWISTED:
+            self.secure = True
+            self.ssl_context = pssl.create_default_context(pssl.Purpose.CLIENT_AUTH)
+            self.ssl_context.options |= (
+                pssl.OP_NO_TLSv1 | pssl.OP_NO_TLSv1_1 | pssl.OP_NO_COMPRESSION
+            )
+            self.ssl_context.load_cert_chain(certfile="host.cert", keyfile="host.key")
+            self.ssl_context.set_alpn_protocols(["h2"])
+
     # noinspection PyAttributeOutsideInit
     @property
     def default_serializer(self):
@@ -348,7 +365,12 @@ class Http2ClientTransportCore(object):
         return self._default_serializer
 
     def send_request_message(self, request_id, meta, body, message_expiry_in_seconds=None):
-        connection = HTTP20Connection(host=self.http_host, port=self.http_port)
+        connection = HTTP20Connection(
+            host=self.http_host,
+            port=self.http_port,
+            secure=self.secure,
+            ssl_context=self.ssl_context,
+        )
         message = {'request_id': request_id, 'meta': meta, 'body': body}
 
         serializer = self.default_serializer
