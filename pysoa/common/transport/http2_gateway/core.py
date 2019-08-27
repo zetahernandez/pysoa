@@ -350,7 +350,7 @@ class Http2ClientTransportCore(object):
             self.ssl_context.options |= (
                 pssl.OP_NO_TLSv1 | pssl.OP_NO_TLSv1_2 | pssl.OP_NO_COMPRESSION
             )
-            self.ssl_context.load_cert_chain(certfile="host.cert", keyfile="host.key")
+            # self.ssl_context.load_cert_chain(certfile="host.cert", keyfile="host.key")
             self.ssl_context.set_alpn_protocols(["h2"])
 
     # noinspection PyAttributeOutsideInit

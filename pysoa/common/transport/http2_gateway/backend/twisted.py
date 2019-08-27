@@ -26,10 +26,10 @@ class TwistedHTTP2BackendThread(BaseHTTP2BackendThread):
         super(TwistedHTTP2BackendThread, self).__init__(*args, **kwargs)
 
     def run(self):
-        with open('host.cert', 'r') as f:
+        with open('cert.pem', 'r') as f:
             cert_data = f.read()
 
-        with open('host.key', 'r') as f:
+        with open('privkey.pem', 'r') as f:
             key_data = f.read()
 
         site = server.Site(PySOADelayedResource(
