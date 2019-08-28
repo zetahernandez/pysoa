@@ -32,11 +32,12 @@ class ProtocolError(Exception):
 
 class H2Connection(Protocol):
 
-    def __init__(self):
+    def __init__(self, sock):
         super().__init__()
         config = h2.config.H2Configuration(
             client_side=False, header_encoding=None
         )
+        self.sock = sock
         self.key = uuid4().hex
         self.conn = h2.connection.H2Connection(config=config)
         self.streams = {}
@@ -58,7 +59,7 @@ class H2Connection(Protocol):
         """
         # self.setTimeout(self.timeOut)
         self.conn.initiate_connection()
-        self._data_to_send.append(self.conn.data_to_send())
+        self.sock.sendall(self.conn.data_to_send())
 
     def data_received(self, data):
         """
@@ -75,7 +76,7 @@ class H2Connection(Protocol):
             # A remote protocol error terminates the connection.
             data_to_send = self.conn.data_to_send()
             if data_to_send:
-                self._data_to_send.append(data_to_send)
+                self.sock.sendall(data_to_send)
 
             self.connectionLost()
             raise ProtocolError()
@@ -102,7 +103,7 @@ class H2Connection(Protocol):
 
         data_to_send = self.conn.data_to_send()
         if data_to_send:
-            self._data_to_send.append(data_to_send)
+            self.sock.sendall(data_to_send)
         return stream_done
 
     def window_updated(self, stream_id, delta):
@@ -224,7 +225,7 @@ class H2Connection(Protocol):
     def send_data(self, stream_id, serialized_message, response_headers):
         self.conn.send_headers(stream_id, response_headers)
         self.conn.send_data(stream_id, serialized_message, end_stream=True)
-        self._data_to_send.append(self.conn.data_to_send())
+        self.sock.sendall(self.conn.data_to_send())
 
 
 class H2Stream:

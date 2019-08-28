@@ -82,7 +82,6 @@ class SocketServer(object):
                         else:
                             self._service_connection(key, mask)
 
-                    self.check_responses()
         finally:
             self.__shutdown_request = False
             self.__is_shut_down.set()
@@ -102,7 +101,7 @@ class SocketServer(object):
         conn, addr = socket.accept()  # Should be ready to read
         conn.setblocking(False)
 
-        protocol = self.protocol_class()
+        protocol = self.protocol_class(conn)
         self.protocol_by_request_id[protocol.key] = protocol
 
         events = selectors.EVENT_READ | selectors.EVENT_WRITE
@@ -122,15 +121,6 @@ class SocketServer(object):
                     try:
                         stream = protocol.data_received(recv_data)
                     except ProtocolError:
-                        data_to_send = protocol.data_to_send()
-                        if data_to_send:
-                            try:
-                                conn.sendall(data_to_send)
-                            except socket.error as se:
-                                if se.args[0] in (errno.EWOULDBLOCK, errno.ENOBUFS):
-                                    return 0
-                                else:
-                                    self.close_and_unregister(conn)
                         self.close_and_unregister(conn)
                     else:
                         if stream and self.request_queue:
@@ -144,14 +134,8 @@ class SocketServer(object):
                                 pass
                 else:
                     self.close_and_unregister(conn)
-
         if mask & selectors.EVENT_WRITE:
-            data_to_send = protocol.data_to_send()
-            if data_to_send:
-                try:
-                    conn.sendall(data_to_send)  # Should be ready to write
-                except socket.error:
-                    self.close_and_unregister(conn)
+            self.check_responses()
 
     def close_and_unregister(self, conn):
         try:

@@ -1,10 +1,9 @@
-import threading
+from multiprocessing import Process
 
-class BaseHTTP2BackendThread(threading.Thread):
+class BaseHTTP2BackendThread(Process):
 
     def __init__(self, requests_queue, responses_queue, backend_layer_config):
-        threading.Thread.__init__(self, daemon=True)
-
+        super(Process, self).__init__(daemon=True)
         self.requests_queue = requests_queue
         self.responses_queue = responses_queue
 

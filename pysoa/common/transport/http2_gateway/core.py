@@ -12,6 +12,7 @@ import time
 
 import attr
 import six
+import multiprocessing as mp
 
 from hyper.http20.connection import HTTP20Connection
 
@@ -118,8 +119,8 @@ class Http2ServerTransportCore(object):
     EXPONENTIAL_BACK_OFF_FACTOR = 4.0
 
     def __attrs_post_init__(self):
-        self.requests_queue = six.moves.queue.Queue(maxsize=self.queue_capacity)
-        self.responses_queue = six.moves.queue.Queue(maxsize=self.queue_capacity)
+        self.requests_queue = mp.Queue(maxsize=self.queue_capacity)
+        self.responses_queue = mp.Queue(maxsize=self.queue_capacity)
 
         # Run backend layer thread
         self.backend_layer.start()
