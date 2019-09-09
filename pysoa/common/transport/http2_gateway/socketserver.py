@@ -94,7 +94,7 @@ class SocketServer(object):
             pass
         else:
             protocol = self.protocol_by_request_id.pop(protocol_key)
-            protocol.send_data(stream_id, message, response_headers)
+            protocol.start_data_send(stream_id, message, response_headers)
 
     def _accept_wrapper(self, socket):
         """ New connection from a client is aquired """
@@ -128,7 +128,7 @@ class SocketServer(object):
                                 self.request_queue.put((
                                     stream.stream_id,
                                     stream.h2_connection.key,
-                                    stream.stream_data.getvalue(),
+                                    stream.stream_inbound_data.getvalue(),
                                 ), timeout=3)
                             except six.moves.queue.Full:
                                 pass
