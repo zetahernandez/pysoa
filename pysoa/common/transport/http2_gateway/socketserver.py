@@ -93,7 +93,11 @@ class SocketServer(object):
         except six.moves.queue.Empty:
             pass
         else:
-            protocol = self.protocol_by_request_id.pop(protocol_key)
+            protocol = self.protocol_by_request_id.get(protocol_key)
+            if not protocol:
+                # TODO: add logger
+                return
+
             protocol.start_data_send(stream_id, message, response_headers)
 
     def _accept_wrapper(self, socket):
@@ -101,7 +105,7 @@ class SocketServer(object):
         conn, addr = socket.accept()  # Should be ready to read
         conn.setblocking(False)
 
-        protocol = self.protocol_class(conn)
+        protocol = self.protocol_class(transport=conn)
         self.protocol_by_request_id[protocol.key] = protocol
 
         events = selectors.EVENT_READ | selectors.EVENT_WRITE
@@ -115,14 +119,15 @@ class SocketServer(object):
             try:
                 recv_data = conn.recv(SOCKET_RECV_BUFFER_SIZE)  # Should be ready to read
             except ConnectionResetError:
-                self.close_and_unregister(conn)
+                self.close_and_unregister(conn, protocol)
             else:
                 if recv_data:
                     try:
                         stream = protocol.data_received(recv_data)
                     except ProtocolError:
-                        self.close_and_unregister(conn)
+                        self.close_and_unregister(conn, protocol)
                     else:
+                        # If stream is completed push it on the requests queue
                         if stream and self.request_queue:
                             try:
                                 self.request_queue.put((
@@ -133,11 +138,15 @@ class SocketServer(object):
                             except six.moves.queue.Full:
                                 pass
                 else:
-                    self.close_and_unregister(conn)
+                    self.close_and_unregister(conn, protocol)
         if mask & selectors.EVENT_WRITE:
             self.check_responses()
 
-    def close_and_unregister(self, conn):
+    def close_and_unregister(self, conn, protocol):
+
+        if protocol.key in self.protocol_by_request_id:
+            del self.protocol_by_request_id[protocol.key]
+
         try:
             self.selector.unregister(conn)
         except ValueError:
